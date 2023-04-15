@@ -1,0 +1,216 @@
+<style>
+body{ 
+	display: flex;
+	flex-direction: column;
+}
+input:not([type=file]){
+	width: 5em;
+}
+#palette{
+	image-rendering: pixelated;
+}
+span{
+    margin-bottom: 0.5em;
+}
+</style>
+<script>
+const read = id => parseInt(document.getElementById(id).value, 10);
+const findMinMax = data => {
+	const min = [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
+	const max = [Number.MIN_SAFE_INTEGER, Number.MIN_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
+	for(let i = 0; i < data.length; i+= 4){
+		for(let j = 0; j < 3; j++){
+			min[j] = Math.min(data[i+j], min[j]);
+			max[j] = Math.max(data[i+j], max[j]);
+		}
+	}
+	return {min, max};
+}
+const avg = (a, b) => Math.round((a + b) / 2);
+const clamp = c => Math.max(0, Math.min(c, 255));
+const R = 0;
+const G = 1;
+const B = 2;
+const medianCut = (minmax, colors) => {
+	const data = [minmax];
+	while(data.length < colors){
+		let maxLength = 0;
+		let maxIndex = 0;
+		let maxComponent = 0;
+		for(let i = 0; i < data.length; i++){
+			for(let j = 0; j < 3; j++){                            
+				const length = data[i].max[j] - data[i].min[j]
+				if (maxLength < length){
+					maxLength = length;
+					maxIndex = i;
+					maxComponent = j;
+				}
+			}
+		}
+		const split1 = { 'min': data[maxIndex].min.slice(), 'max': data[maxIndex].max.slice() }; 
+		const split2 = { 'min': data[maxIndex].min.slice(), 'max': data[maxIndex].max.slice() }; 
+		const half1 = Math.ceil(maxLength / 2) + data[maxIndex].min[maxComponent];
+		split1.max[maxComponent] = half1; 
+		split2.min[maxComponent] = half1 + 1;
+		data.splice(maxIndex, 1, split1, split2); 
+	}
+	return data.map( _ => [avg(_.min[R], _.max[R]), avg(_.min[G], _.max[G]), avg(_.min[B], _.max[B]), 255] );
+}
+const findIndexes = (data, colors) => {
+	const result = Array(data.length / 4);
+	let totalError = 0;
+	for(let i = 0; i < data.length / 4; i++){
+		let error = Number.MAX_VALUE;
+		let index = 0;
+		for(let j = 0; j < colors.length; j++){
+			const currentError = Math.abs(colors[j][R] - data[i*4 + R]) + 
+					Math.abs(colors[j][G] - data[i*4 + G]) + 
+					Math.abs(colors[j][B] - data[i*4 + B]);
+			if (currentError < error){
+				error = currentError;
+				index = j;
+			} 
+		}
+		result[i] = index;
+		totalError += error;
+	}
+	return [result, totalError];
+}
+const kMeans = (data, seedColors) => {
+	let colors = seedColors.slice();
+	let lastError = Number.MAX_VALUE;
+	let safeguard = 50;
+	while(1){
+		const [indexes, error] = findIndexes(data, colors);
+		if (safeguard-- < 0 || Math.abs(lastError - error) < 20){   	
+			const result = indexes.map( index => colors[index] );
+			return [result, colors];
+		}
+		let errors = Array(colors.length);
+		for(let i = 0; i < indexes.length; i++){
+			const c = colors[indexes[i]];
+			const diff = [Math.abs(data[4*i + R] - c[R]), Math.abs(data[4*i + G] - c[G]), Math.abs(data[4*i + B] - c[B])];
+			errors[i] =[i, Math.sqrt(diff[0]*diff[0] + diff[1]*diff[1] + diff[2]*diff[2])];
+		}
+		lastError = error;
+		let sums = Array(colors.length).fill(0).map(_ => [0,0,0,0]);
+		for(let i = 0; i < indexes.length; i++){
+			const c = indexes[i];
+			sums[c][R] += data[4 * i + R];
+			sums[c][G] += data[4 * i + G];
+			sums[c][B] += data[4 * i + B];
+			sums[c][3]++;
+		}
+		const empty = []
+		for(let i = 0; i < colors.length; i++){
+			if (0 === sums[i][3]) { 
+				empty.push(i); 
+				continue;
+			}
+			colors[i][R] = clamp(Math.round(sums[i][R] / sums[i][3]));
+			colors[i][G] = clamp(Math.round(sums[i][G] / sums[i][3]));
+			colors[i][B] = clamp(Math.round(sums[i][B] / sums[i][3]));
+		}
+		if (empty.length){
+			errors.sort( (a, b) => a[1] < b[1] ? 1 : a[1] == b[1] ? 0 : -1 );
+			for(let i = 0; i < empty.length; i++){
+				const col = colors[empty[i]];
+				const idx = errors[i][0];
+				col[R] = data[idx*4 + R]; 
+				col[G] = data[idx*4 + G]; 
+				col[B] = data[idx*4 + B]; 
+			}			
+		}
+	}; 
+}
+const updateDimensions = (canvas, w, h) => {
+	const palette = document.getElementById('palette');
+	canvas.width = w;
+	canvas.height = h;
+	palette.width = read('c');
+	palette.height = h;
+}
+const limit = (c, bits) => (c >> (8-bits) ) << (8-bits);
+window.onload = () => {
+	const canvas = document.getElementById('canvas');
+	const palette = document.getElementById('palette');
+	updateDimensions(canvas, read('w'), read('h'));
+
+	document.getElementById('f').onchange = ev => {
+		const reader = new FileReader();
+
+		reader.onloadend = () => {
+			const image = new Image();
+
+			image.onload = () =>  {
+				const width = read('w');
+				const height = read('h');
+				const colCount = read('c');
+				updateDimensions(canvas, width, height);
+				const context = canvas.getContext('2d');
+				context.drawImage(image, 0, 0, image.width, image.height, 0, 0, width, height);
+				const data = context.getImageData(0, 0, width, height);
+
+				const paletteImage = new Image(colCount, height);
+				const paletteContext = palette.getContext('2d');
+				const pData = paletteContext.getImageData(0, 0, colCount, height);
+
+				const [rWidth, gWidth, bWidth] = [read('r'), read('g'), read('b')];
+
+				for(let y = 0; y < height; y++){
+					const line = data.data.slice( y * 4 * width, y * 4 * width + 4 * width );
+					const minmax = findMinMax(line);
+					const seedColors = medianCut(minmax, colCount);
+					const [newLine, colors] = kMeans(line, seedColors);
+					for(let x = 0; x < width; x++){
+						data.data[4 * (x + y * width)] = limit(newLine[x][0], rWidth);
+						data.data[4 * (x + y * width) + 1] = limit(newLine[x][1], gWidth);
+						data.data[4 * (x + y * width) + 2] = limit(newLine[x][2], bWidth);
+						data.data[4 * (x + y * width) + 3] = 255;
+					}
+					for(let x = 0; x < colCount; x++){
+						pData.data[4 * (x + y * colCount)] = colors[x][0];
+						pData.data[4 * (x + y * colCount) + 1] = colors[x][1];
+						pData.data[4 * (x + y * colCount) + 2] = colors[x][2];
+						pData.data[4 * (x + y * colCount) + 3] = 255;
+					}
+				}
+				context.putImageData(data, 0, 0);
+				paletteContext.putImageData(pData, 0, 0);
+	      		};
+			image.src = reader.result;
+		}
+		reader.readAsDataURL(ev.currentTarget.files[0]);
+	}
+	document.body.addEventListener('click', function(ev){
+		let im = ev.target;
+		if (im.nodeName == "CANVAS"){
+			if (im.style.position == "fixed"){
+				im.style.position = "";
+				im.style.width = "";
+				im.style.height = "";
+				im.style.top = "";
+			}else{
+				im.style.position = "fixed";
+				im.style.width = "100vw";
+				im.style.height = "100vh";
+				im.style.top = "0px";
+				im.style.left = "0px";
+			}
+		}
+	});
+}
+</script>
+<span><a href="https://en.wikipedia.org/wiki/Hold-And-Modify#Sliced_HAM_mode_(SHAM)">Sliced palette</a> image quantizer. 
+Resulting palette is displayed on the right. R/G/B input fields are used to limit color bandwidth.</span>
+<div>Width: <input id="w" type="number" min="1" value="160" /> 
+Height: <input id="h" type="number" min="1" value="200" /> 
+Colors: <input id="c" type="number" min="1" value="12" /> 
+R: <input type="number" min="0" max="8" id="r" value="3" /> 
+G: <input type="number" min="0" max="8" id="g" value="3" /> 
+B: <input type="number" min="0" max="8" id="b" value="3" /> 
+<input type="file" id="f" />
+</div>
+<div><canvas  id="canvas"  ></canvas>
+<canvas  id="palette" ></canvas>
+</div>
